@@ -1,8 +1,21 @@
 import gzip
-import numpy
+import numpy as np
+import time
 from scipy.stats import norm
-from numba import jit
 
+
+mu = 200
+sd = 25
+cond_means = []
+for txp_len in range(1001):
+        d = norm(mu, sd)
+        # the (discrete) distribution up to 200
+        p = np.array([d.pdf(i) for i in range(txp_len+1)])
+        # re-normalize so this is a proper distribution
+        p /= p.sum()
+        # the expected value of a distribution f is \sum_{i=0}^{max_i} f(i) * i
+        cond_mean = np.sum([i * p[i] for i in range(len(p))])
+        cond_means.append(cond_mean)
 
 def parse_file(file_input):
     transcripts = {}
@@ -12,7 +25,9 @@ def parse_file(file_input):
     precompute = []
     alignment_bool = False
     num_transcripts = 0
-
+    count_of_aligns = 0
+    d = norm(200, 25)
+    D = d.cdf
     with gzip.open(file_input, 'rb') as f:
         count = 0
         for line in f:
@@ -22,6 +37,8 @@ def parse_file(file_input):
                 count = count + 1
             elif alignment_bool:
                 if len(str(line).split("\\t")) == 1:
+                    # print(str(count_of_aligns) + " alignments done.")
+                    count_of_aligns += 1
                     alignment_offsets.append(int(temp[1][0: len(temp[1]) - 2]))
                 else:
                     curr_align = temp[1].split("\\t")
@@ -37,16 +54,17 @@ def parse_file(file_input):
                         align_prob = float(align_prob[0])
                     length = transcript_list[transcripts[align_name]]["length"]
                     p_2 = transcript_list[transcripts[align_name]]["p_2"]
-                    p_3 = norm.cdf(length) - align_pos
+                    p_3 = D(length - align_pos)
                     precompute.append(p_2 * p_3 * align_prob)
-                    align_obj = {"index": transcripts[align_name], "ori": align_ori, "pos": align_pos, "prob": align_prob}
+                    # print(str(p_2) + " " + str(p_3) + " " + str(align_prob) + " " + str(p_2 * p_3 * align_prob) + " length " + str(length) + " " + str(align_pos))
+                    align_obj = {"index": transcripts[align_name], "ori": align_ori, "pos": align_pos, "prob": align_prob, "p_3": p_3}
                     alignments.append(align_obj)
             else:
                 count = count + 1
                 if count > num_transcripts:
                     print("done transcript parsing")
                     alignment_bool = True
-                print(str(count) + " out of " + str(num_transcripts))
+                # print(str(count) + " out of " + str(num_transcripts))
                 n = temp[1].split("\\t")
                 key = n[0]
                 val = int(n[1][0: len(n[1]) - 2])
@@ -57,67 +75,64 @@ def parse_file(file_input):
     return num_transcripts, transcript_list, alignments, alignment_offsets, precompute
 
 
-def get_effective_length(norm_len) -> float:
-    mu = 200
-    sd = 25
-    d = norm(mu, sd)
-    p = numpy.array([d.pdf(i) for i in range(norm_len + 1)])
-    p /= p.sum()
-    cond_mean = numpy.sum([i * p[i] for i in range(len(p))])
-    eff_len = norm_len - cond_mean
-    return eff_len
+def get_effective_length(l) -> float:
+    if l >= 1000:
+            return l - mu
+    else:
+            return l - cond_means[l]
 
 
-@jit(nopython=True)
-def full_model_em(align_file, output_file, num_transcripts, transcripts, alignments, alignment_offsets, precompute):
-# def full_model_em(align_file, output_file):
-#   num_transcripts, transcripts, alignments, alignment_offsets, precompute = parse_file(align_file)
+def check_for_convergence(n_arr, n_update, num_transcripts):
+    for i in range(0, num_transcripts):
+        if n_arr[i] - n_update[i] > 1:
+            # print(str(n_arr[i]) + " = n_arr and update = " + str(n_update[i]))
+            return True
+    return False
+
+#@jit(nopython=True)
+def full_model_em(align_file, num_transcripts, transcripts, alignments, alignment_offsets, precompute):
+# def full_model_em(align_file):
+#    num_transcripts, transcripts, alignments, alignment_offsets, precompute = parse_file(align_file)
     n_arr = [1/num_transcripts] * num_transcripts
+    #n_arr = np.ones(num_transcripts) / float(num_transcripts)
     not_converged = True
 
     while not_converged:
+        #n_update = np.zeros(num_transcripts)
         n_update = [0] * num_transcripts
         not_converged = False
-        print("Full model not converged")
+        # print("Full model not converged")
         offset = 0
         for align in range(0, len(alignment_offsets)):
-            print(offset)
 
             # Short circuit if only one transcript instead of running EM on it
             if alignment_offsets[align] == 1:
-                n_update[alignments[offset]["index"]] = n_update[alignments[offset]["index"]] + 1
+                n_update[alignments[offset]["index"]] += 1
                 offset = offset + 1
                 continue
+            tot = 0.0
+            for idx in range(0, alignment_offsets[align]):
+                curr_index = alignments[offset + idx]["index"]
+                tot += n_arr[curr_index] * precompute[offset + idx]
             for idx in range(0, alignment_offsets[align]):
                 curr_index = alignments[offset]["index"]
-                p_1 = n_arr[curr_index]
-                """p_2 = 1 / get_effective_length(transcripts[curr_index]["length"])
-                p_3 = norm.cdf(transcripts[curr_index]["length"] - alignments[offset]["pos"])
-                p_4 = alignments[offset]["prob"]"""
-                # print("offset " + str(offset) + " p1 " + str(p_1) + " p2 " + str(p_2) + " p3 " + str(p_3) + " p4 " + str(p_4) + " val: " + str(p_1 * p_2 * p_3 * p_4))
-                n_update[alignments[offset]["index"]] = n_update[alignments[offset]["index"]] + (n_arr[curr_index] * precompute[offset])
-                """p_1 = n_arr[trans["index"]]
-                p_2 = 1 / get_effective_length(transcripts[trans["index"]]["length"])
-                p_3 = norm.cdf(transcripts[trans["index"]]["length"] - trans["pos"])
-                p_4 = trans["prob"]
-                n_update[trans["index"]] += (p_1 * p_2 * p_3 * p_4)"""
-                offset = offset + 1
+                n_update[alignments[offset]["index"]] += n_arr[curr_index] * precompute[offset] / tot
+                offset += 1
 
         # If we find that one value hasn't converged, continue process
-        for i in range(0, num_transcripts):
-            if int(n_arr[i] * 1000) != int(n_update[i] * 1000):
-                not_converged = True
+        not_converged = check_for_convergence(n_arr, n_update, num_transcripts)
         n_arr = n_update
-    print("Writing to full EM file")
-    f = open(output_file, "w")
-    for i in range(0, num_transcripts):
-        f.write(str(transcripts[i]["name"]) + "\t" + str(get_effective_length(transcripts[i]["length"])) + "\t" + str(n_arr[i]))
-    f.close()
+        for i in range(0, num_transcripts):
+            n_update[i] /= len(alignment_offsets)
+        if not_converged:
+            n_arr = n_update
+    #print("Writing to full EM file")
+    return n_arr
 
 
-@jit(nopython=True)
-def equivalence_class_em(align_file, output_file, num_transcripts, transcripts, alignments, alignment_offsets):
-#def equivalence_class_em(align_file, output_file):
+#@jit(nopython=True)
+def equivalence_class_em(align_file, num_transcripts, transcripts, alignments, alignment_offsets):
+#def equivalence_class_em(align_file):
 #    num_transcripts, transcripts, alignments, alignment_offsets, precompute = parse_file(align_file)
     eq_classes = {}
     offset = 0
@@ -125,45 +140,52 @@ def equivalence_class_em(align_file, output_file, num_transcripts, transcripts, 
         l = []
         for j in range(0, alignment_offsets[idx]):
             l.append(alignments[offset + j]["index"])
-        offset = offset + alignment_offsets[idx]
+        offset += alignment_offsets[idx]
         tset = tuple(sorted(l))
         if tset in eq_classes:
-            eq_classes[tset] = eq_classes[tset] + 1
+            eq_classes[tset] += 1
         else:
             eq_classes[tset] = 1
 
     n_arr = [1 / num_transcripts] * num_transcripts
+    # n_arr = np.ones(num_transcripts) / float(num_transcripts)
     not_converged = True
-    print(len(eq_classes))
     while not_converged:
+        # n_update = np.zeros(num_transcripts)
         n_update = [0] * num_transcripts
         not_converged = False
-        print("Equiv not converged")
+        # print("Equiv not converged")
         count = 0
         for eq_class in eq_classes:
             # Short circuit if only one transcript instead of running EM on it
-            print(count)
             count = count + 1
             if len(eq_class) == 1:
-                n_update[eq_class[0]] = n_update[eq_class[0]] + 1
+                n_update[eq_class[0]] += + 1
                 continue
             summation_value = 0
             for i in range(0, len(eq_class)):
-                summation_value = summation_value + n_arr[eq_class[i]] * (1 / get_effective_length(transcripts[eq_class[i]]["length"]))
+                summation_value += n_arr[eq_class[i]] * transcripts[eq_class[i]]["p_2"]
             for trans in eq_class:
                 p_1 = n_arr[trans]
-                p_2 = 1 / transcripts[trans]["p_2"]
-                n_update[trans] = n_update[trans] + (eq_classes[eq_class] * p_1 * p_2) / summation_value
+                p_2 = transcripts[trans]["p_2"]
+                n_update[trans] += (eq_classes[eq_class] * p_1 * p_2) / summation_value
 
         # If we find that one value hasn't converged, continue process
-        for i in range(0, len(eq_classes)):
-            if int(n_arr[i] * 1000) != int(n_update[i] * 1000):
-                not_converged = True
+        not_converged = check_for_convergence(n_arr, n_update, num_transcripts)
         n_arr = n_update
-    print("Writing to equiv EM file")
+        for i in range(0, num_transcripts):
+            n_update[i] /= len(alignment_offsets)
+        if not_converged:
+            n_arr = n_update
+    # print("Writing to equiv EM file")
+    return n_arr
+
+
+def write_to_file(output_file, num_transcripts, transcripts, n_arr):
     f = open(output_file, "w")
     for i in range(0, num_transcripts):
-        f.write(str(transcripts[i]["name"]) + "\t" + str(get_effective_length(transcripts[i]["length"])) + "\t" + str(n_arr[i]))
+        f.write(str(transcripts[i]["name"]) + "\t" + str(int(round(get_effective_length(transcripts[i]["length"]), 3))) + "\t" + str(
+            n_arr[i]) + "\n")
     f.close()
 
 
@@ -171,13 +193,27 @@ def call_both_em_functions(align_file, equiv_output, full_output):
     """
     Function created to run both the functions at once so we don't have to parse the file twice.
     """
+    print(time.time())
     num_transcripts, transcripts, alignments, alignment_offsets, pre = parse_file(align_file)
-    full_model_em(align_file, full_output, num_transcripts, transcripts, alignments, alignment_offsets, pre)
-    equivalence_class_em(align_file, equiv_output, num_transcripts, transcripts, alignments, alignment_offsets)
 
+    start_time = time.time()
+    print("Starting Equivalence Class EM at: " + str(start_time) + " or minutes: " + str(start_time/60) + "\n")
+    n_arr = equivalence_class_em(align_file, num_transcripts, transcripts, alignments, alignment_offsets)
+    end_time = time.time()
+    tot = end_time - start_time
+    print("Done Equivalence Class EM at: " + str(tot) + " or minutes: " + str(tot/60) + "\n")
+    write_to_file(equiv_output, num_transcripts, transcripts, n_arr)
+
+    start_t = time.time()
+    print("Starting Full EM at: " + str(start_t) + " or minutes: " + str(start_t/60) + "\n")
+    n_arr = full_model_em(align_file, num_transcripts, transcripts, alignments, alignment_offsets, pre)
+    end_t = time.time()
+    total = start_t - end_t
+    print("Done Full EM at: " + str(total) + " or minutes: " + str(total/60))
+    write_to_file(full_output, num_transcripts, transcripts, n_arr)
 
 #full_model_em("./data/alignments.cs423.gz", "./data/output.txt")
-#call_both_em_functions("./data/alignments.cs423.gz", "./data/equiv_output.txt", "./data/full_output.txt")
+call_both_em_functions("./data/alignments.cs423.gz", "./data/equiv_output.txt", "./data/full_output.txt")
 """if __name__ == "__main__":
     import sys
     version = sys.argv[1]

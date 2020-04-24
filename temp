@@ -1,24 +1,20 @@
-def _error(actual: numpy.ndarray, predicted: numpy.ndarray):
-    """ Simple error """
-    return numpy.array(actual) - numpy.array(predicted)
+def run_quick(num):
+    l = []
+    for i in range(0, num):
+        l.append(i)
 
 
-def mse(actual: numpy.ndarray, predicted: numpy.ndarray):
-    """ Mean Squared Error """
-    return numpy.mean(numpy.square(_error(actual, predicted)))
+def run_slow(num):
+    l = []
+    for i in range(0, int(num * num / 10)):
+        l.append(i)
 
 
-def get_stats(real, fake):
-    real_arr = []
-    fake_arr = []
-    with open(real, 'rb') as f:
-        for line in f:
-            temp = str(line).split("\\t")
-            real_arr.append(float(temp[1][0: len(temp[1]) - 6]))
-    with open(fake, 'rb') as f:
-        for line in f:
-            temp = str(line).split("\\t")
-            num = temp[2].split("\\")
-            fake_arr.append(float(num[0]))
-    print(stats.spearmanr(real_arr, fake_arr))
-    print(mse(real_arr, fake_arr))
+def run_both(num):
+    run_quick(num)
+    run_slow(num)
+
+
+run_slow(10000)
+
+Measure-Command {start-process python ./tempor.py -Wait}

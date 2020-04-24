@@ -2,12 +2,13 @@ import gzip
 import numpy as np
 import time
 from scipy.stats import norm
+from scipy import stats
 
 
 mu = 200
 sd = 25
 cond_means = []
-for txp_len in range(1001):
+"""for txp_len in range(1001):
         d = norm(mu, sd)
         # the (discrete) distribution up to 200
         p = np.array([d.pdf(i) for i in range(txp_len+1)])
@@ -16,7 +17,7 @@ for txp_len in range(1001):
         # the expected value of a distribution f is \sum_{i=0}^{max_i} f(i) * i
         cond_mean = np.sum([i * p[i] for i in range(len(p))])
         cond_means.append(cond_mean)
-
+"""
 def parse_file(file_input):
     transcripts = {}
     transcript_list = []
@@ -84,24 +85,20 @@ def get_effective_length(l) -> float:
 
 def check_for_convergence(n_arr, n_update, num_transcripts):
     for i in range(0, num_transcripts):
-        if n_arr[i] - n_update[i] > 1:
-            # print(str(n_arr[i]) + " = n_arr and update = " + str(n_update[i]))
+        if abs(n_arr[i] - n_update[i]) > 1:
+            print(str(n_arr[i]) + " = n_arr and update = " + str(n_update[i]) + " subtracted is " + str(abs(n_arr[i] - n_update[i])))
             return True
     return False
 
-#@jit(nopython=True)
+
 def full_model_em(align_file, num_transcripts, transcripts, alignments, alignment_offsets, precompute):
 # def full_model_em(align_file):
 #    num_transcripts, transcripts, alignments, alignment_offsets, precompute = parse_file(align_file)
     n_arr = [1/num_transcripts] * num_transcripts
-    #n_arr = np.ones(num_transcripts) / float(num_transcripts)
     not_converged = True
-
+    prob_totals = n_arr.copy()
     while not_converged:
-        #n_update = np.zeros(num_transcripts)
         n_update = [0] * num_transcripts
-        not_converged = False
-        # print("Full model not converged")
         offset = 0
         for align in range(0, len(alignment_offsets)):
 
@@ -120,17 +117,16 @@ def full_model_em(align_file, num_transcripts, transcripts, alignments, alignmen
                 offset += 1
 
         # If we find that one value hasn't converged, continue process
-        not_converged = check_for_convergence(n_arr, n_update, num_transcripts)
-        n_arr = n_update
+        ret_arr = n_update.copy()
         for i in range(0, num_transcripts):
             n_update[i] /= len(alignment_offsets)
-        if not_converged:
-            n_arr = n_update
+        not_converged = check_for_convergence(prob_totals, ret_arr, num_transcripts)
+        n_arr = n_update
+        prob_totals = ret_arr.copy()
     #print("Writing to full EM file")
-    return n_arr
+    return ret_arr
 
 
-#@jit(nopython=True)
 def equivalence_class_em(align_file, num_transcripts, transcripts, alignments, alignment_offsets):
 #def equivalence_class_em(align_file):
 #    num_transcripts, transcripts, alignments, alignment_offsets, precompute = parse_file(align_file)
@@ -148,13 +144,10 @@ def equivalence_class_em(align_file, num_transcripts, transcripts, alignments, a
             eq_classes[tset] = 1
 
     n_arr = [1 / num_transcripts] * num_transcripts
-    # n_arr = np.ones(num_transcripts) / float(num_transcripts)
+    prob_totals = n_arr.copy()
     not_converged = True
     while not_converged:
-        # n_update = np.zeros(num_transcripts)
         n_update = [0] * num_transcripts
-        not_converged = False
-        # print("Equiv not converged")
         count = 0
         for eq_class in eq_classes:
             # Short circuit if only one transcript instead of running EM on it
@@ -171,21 +164,19 @@ def equivalence_class_em(align_file, num_transcripts, transcripts, alignments, a
                 n_update[trans] += (eq_classes[eq_class] * p_1 * p_2) / summation_value
 
         # If we find that one value hasn't converged, continue process
-        not_converged = check_for_convergence(n_arr, n_update, num_transcripts)
-        n_arr = n_update
+        ret_arr = n_update.copy()
         for i in range(0, num_transcripts):
             n_update[i] /= len(alignment_offsets)
-        if not_converged:
-            n_arr = n_update
-    # print("Writing to equiv EM file")
-    return n_arr
+        not_converged = check_for_convergence(prob_totals, ret_arr, num_transcripts)
+        n_arr = n_update
+        prob_totals = ret_arr.copy()
+    return ret_arr
 
 
 def write_to_file(output_file, num_transcripts, transcripts, n_arr):
     f = open(output_file, "w")
     for i in range(0, num_transcripts):
-        f.write(str(transcripts[i]["name"]) + "\t" + str(int(round(get_effective_length(transcripts[i]["length"]), 3))) + "\t" + str(
-            n_arr[i]) + "\n")
+        f.write(str(transcripts[i]["name"]) + "\t" + str(int(round(get_effective_length(transcripts[i]["length"]), 3))) + "\t" + str(round(n_arr[i], 1)) + "\n")
     f.close()
 
 
@@ -198,22 +189,54 @@ def call_both_em_functions(align_file, equiv_output, full_output):
 
     start_time = time.time()
     print("Starting Equivalence Class EM at: " + str(start_time) + " or minutes: " + str(start_time/60) + "\n")
-    n_arr = equivalence_class_em(align_file, num_transcripts, transcripts, alignments, alignment_offsets)
+    ret_arr = equivalence_class_em(align_file, num_transcripts, transcripts, alignments, alignment_offsets)
     end_time = time.time()
     tot = end_time - start_time
     print("Done Equivalence Class EM at: " + str(tot) + " or minutes: " + str(tot/60) + "\n")
-    write_to_file(equiv_output, num_transcripts, transcripts, n_arr)
+    write_to_file(equiv_output, num_transcripts, transcripts, ret_arr)
 
     start_t = time.time()
     print("Starting Full EM at: " + str(start_t) + " or minutes: " + str(start_t/60) + "\n")
-    n_arr = full_model_em(align_file, num_transcripts, transcripts, alignments, alignment_offsets, pre)
+    return_arr = full_model_em(align_file, num_transcripts, transcripts, alignments, alignment_offsets, pre)
     end_t = time.time()
     total = start_t - end_t
     print("Done Full EM at: " + str(total) + " or minutes: " + str(total/60))
-    write_to_file(full_output, num_transcripts, transcripts, n_arr)
+    write_to_file(full_output, num_transcripts, transcripts, return_arr)
 
+
+def _error(actual: np.ndarray, predicted: np.ndarray):
+    """ Simple error """
+    return np.array(actual) - np.array(predicted)
+
+
+def mse(actual: np.ndarray, predicted: np.ndarray):
+    """ Mean Squared Error """
+    return np.mean(np.square(_error(actual, predicted)))
+
+
+def get_stats(real, fake):
+    real_arr = []
+    fake_arr = []
+    count = 0
+    with open(real, 'rb') as f:
+        for line in f:
+            if count == 0:
+                count = 1
+                continue
+            temp = str(line).split("\\t")
+            print(temp)
+            real_arr.append(float(temp[1][0: len(temp[1]) - 6]))
+    with open(fake, 'rb') as f:
+        for line in f:
+            temp = str(line).split("\\t")
+            num = temp[2].split("\\")
+            fake_arr.append(float(num[0]))
+    print(stats.spearmanr(real_arr, fake_arr))
+    print(mse(real_arr, fake_arr))
+
+get_stats("./data/true_counts.tsv", "./data/full_output.txt")
 #full_model_em("./data/alignments.cs423.gz", "./data/output.txt")
-call_both_em_functions("./data/alignments.cs423.gz", "./data/equiv_output.txt", "./data/full_output.txt")
+#call_both_em_functions("./data/alignments.cs423.gz", "./data/equiv_output.txt", "./data/full_output.txt")
 """if __name__ == "__main__":
     import sys
     version = sys.argv[1]

@@ -1,0 +1,24 @@
+def _error(actual: numpy.ndarray, predicted: numpy.ndarray):
+    """ Simple error """
+    return numpy.array(actual) - numpy.array(predicted)
+
+
+def mse(actual: numpy.ndarray, predicted: numpy.ndarray):
+    """ Mean Squared Error """
+    return numpy.mean(numpy.square(_error(actual, predicted)))
+
+
+def get_stats(real, fake):
+    real_arr = []
+    fake_arr = []
+    with open(real, 'rb') as f:
+        for line in f:
+            temp = str(line).split("\\t")
+            real_arr.append(float(temp[1][0: len(temp[1]) - 6]))
+    with open(fake, 'rb') as f:
+        for line in f:
+            temp = str(line).split("\\t")
+            num = temp[2].split("\\")
+            fake_arr.append(float(num[0]))
+    print(stats.spearmanr(real_arr, fake_arr))
+    print(mse(real_arr, fake_arr))
